@@ -137,11 +137,39 @@ export function getProjectTools(bridgeOptions: BridgeOptions) {
         required: ["path"],
       },
       handler: async (args: { path: string }) => {
+        // app.newProject silently does nothing when handed a directory, so
+        // catch the most common mistake before it reaches the bridge.
+        const requested = args.path.trim();
+        if (!/\.prproj$/i.test(requested)) {
+          return {
+            success: false,
+            error: `create_project needs a full .prproj file path, not a directory or bare name. Got: ${args.path}`,
+          };
+        }
+
         const script = buildToolScript(`
-          app.newProject("${escapeForExtendScript(args.path)}");
+          var requested = "${escapeForExtendScript(requested)}";
+          app.newProject(requested);
+
           var project = app.project;
-          if (!project) return __error("Failed to create project");
-          return __result({ created: true, name: project.name, path: project.path });
+          if (!project) return __error("Failed to create a project at " + requested);
+
+          // app.project is truthy whenever ANY project is open, so on failure it
+          // still resolves -- to the project that was already open. Comparing the
+          // file name is what distinguishes "created" from "nothing happened".
+          var actual = String(project.path);
+          var wantName = requested.replace(/\\\\/g, "/").split("/").pop();
+          var gotName = actual.replace(/\\\\/g, "/").split("/").pop();
+
+          if (gotName !== wantName) {
+            return __error(
+              "Premiere did not create a project at " + requested +
+              "; the active project is still " + actual +
+              ". Check that the parent directory exists and is writable."
+            );
+          }
+
+          return __result({ created: true, verified: true, name: project.name, path: actual });
         `);
         return sendCommand(script, bridgeOptions);
       },
